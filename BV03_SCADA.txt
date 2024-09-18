@@ -1,0 +1,627 @@
+import os
+import serial
+import time
+import math
+import numpy as np
+import threading
+from tkinter import Tk, Label, Entry, Button, messagebox, Toplevel, Frame
+from PIL import Image, ImageTk
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+# Define the path to the file in the "Documents" folder
+file_path = os.path.expanduser("~/OneDrive/Documents/CAS Modbus Scanner/Debuglog.txt")
+
+# Open the serial port, change the port name and baudrate as needed
+ser = serial.Serial('COM3', 115200, timeout=1)
+
+# Initialize lists to store values
+time_values = []  # Added to store timestamps for plotting
+i1_values = []
+i2_values = []
+i3_values = []
+it_values = []
+v1_values = []
+v2_values = []
+v3_values = []
+f_values = []
+pf1_values = []
+pf2_values = []
+pf3_values = []
+real_power1_values = []
+real_power2_values = []
+real_power3_values = []
+reactive_power1_values = []
+reactive_power2_values = []
+reactive_power3_values = []
+apparent_power1_values = []
+apparent_power2_values = []
+apparent_power3_values = []
+angle1_values = []
+angle2_values = []
+angle3_values = []
+
+# Global variable to store plot frame
+plot_frame = None
+
+# Global variable to store login window
+root = None
+
+# Function to open the main GUI window
+def open_main_gui():
+    global main_window, plot_frame  # Make plot_frame a global variable
+    main_window = Toplevel()
+    main_window.title("Main GUI")
+
+    # Load the image
+    load = Image.open("singlin20.png")
+    load = load.resize((1000, 600))
+    render = ImageTk.PhotoImage(load)
+
+    # Create a label to display the image
+    image_label = Label(main_window, image=render)
+    image_label.image = render
+    image_label.grid(row=0, column=2, rowspan=20)  # Adjust the row and column as needed
+    
+    # Create labels for displaying alarm signals
+    alarm1_label = Label(main_window, text="✖", bg="red", fg="white", font=("Arial", 24), width=2)
+    alarm1_label.place(relx=1, rely=0, anchor="ne", x=-703, y=144)  # Position to the right of the image
+    alarm2_label = Label(main_window, text="✖", bg="red", fg="white", font=("Arial", 24), width=2)
+    alarm2_label.place(relx=1, rely=0, anchor="ne", x=-400, y=141)  # Position to the right of the image
+    alarm3_label = Label(main_window, text="✖", bg="red", fg="white", font=("Arial", 24), width=2)
+    alarm3_label.place(relx=1, rely=0, anchor="ne", x=-400, y=285)  # Position to the right of the image
+    alarm4_label = Label(main_window, text="✖", bg="red", fg="white", font=("Arial", 24), width=2)
+    alarm4_label.place(relx=1, rely=0, anchor="ne", x=-400, y=435)  # Position to the right of the image
+
+    # Create a label to display values being sent
+    label_values_sent = Label(main_window, text="")
+    label_values_sent.grid(row=0, column=0, sticky="nw", padx=100, pady=0)  # Adjust padx and pady as needed
+
+    # Start a new thread for reading and sending data
+    data_thread = threading.Thread(target=read_and_send_data, args=(label_values_sent, alarm1_label, alarm2_label, alarm3_label, alarm4_label, file_path))
+    data_thread.daemon = True
+    data_thread.start()
+
+    # Create a frame for plotting
+    plot_frame = Toplevel(main_window)
+    plot_frame.title("Plots")
+    plot_frame.geometry("800x600")
+
+    # Create plots
+    fig, axs = plt.subplots(4, 2, figsize=(50, 50))  # Increase figsize for larger plots
+
+    # Initialize plots
+    line1, = axs[0, 0].plot([], [], label='Frequency (Hz)')
+    line2, = axs[1, 0].plot([], [], label='DC Voltage (V)')
+    line3, = axs[2, 0].plot([], [], label='AC Voltage (V)')
+    line4, = axs[3, 0].plot([], [], label='Currents (A)')
+    line5, = axs[0, 1].plot([], [], label='Power Factors')
+    line6, = axs[1, 1].plot([], [], label='Real Powers (kW)')
+    line7, = axs[2, 1].plot([], [], label='Reactive Powers (kVA)')
+    line8, = axs[3, 1].plot([], [], label='Apparent Powers (kVAR)')
+
+    # Set labels and legends
+    axs[0, 0].set_xlabel('Time')
+    axs[0, 0].set_ylabel('Frequency (Hz)')
+    axs[1, 0].set_xlabel('Time')
+    axs[1, 0].set_ylabel('DC Voltages (V)')
+    axs[2, 0].set_xlabel('Time')
+    axs[2, 0].set_ylabel('AC Voltages (V)')
+    axs[3, 0].set_xlabel('Time')
+    axs[3, 0].set_ylabel('Currents (A)')
+    axs[0, 1].set_xlabel('Time')
+    axs[0, 1].set_ylabel('Power Factors')
+    axs[1, 1].set_xlabel('Time')
+    axs[1, 1].set_ylabel('Real Powers (kW)')
+    axs[2, 1].set_xlabel('Time')
+    axs[2, 1].set_ylabel('Reactive Powers (kVA)')
+    axs[3, 1].set_xlabel('Time')
+    axs[3, 1].set_ylabel('Apparent Powers (kVAR)')
+
+    # Set legends
+    axs[0, 0].legend()
+    axs[1, 0].legend()
+    axs[2, 0].legend()
+    axs[3, 0].legend()
+    axs[0, 1].legend()
+    axs[1, 1].legend()
+    axs[2, 1].legend()
+    axs[3, 1].legend()
+
+    # Create canvas to embed plots
+    canvas = FigureCanvasTkAgg(fig, master=plot_frame)
+    canvas.draw()
+    canvas.get_tk_widget().pack()
+
+    # Store the canvas widget
+    plot_frame.canvas = canvas
+
+    # Hide the login window
+    root.withdraw()
+
+
+# Function to read data from file and send it to Arduino
+def read_and_send_data(label_values_sent, alarm1_label, alarm2_label, alarm3_label, alarm4_label, file_path):
+    global ser, time_values, angle1_values, angle2_values, angle3_values, plot_frame, i1_values, i2_values, i3_values, it_values, v1_values, v2_values, v3_values, f_values, pf1_values, pf2_values, pf3_values, real_power1_values, real_power2_values, real_power3_values, reactive_power1_values, reactive_power2_values, reactive_power3_values, apparent_power1_values, apparent_power2_values, apparent_power3_values
+
+    # Create labels for displaying values
+    #f_label = Label(main_window, text="f =")
+    #f_label.grid(row=0, column=0, sticky="w")
+    
+    #v1_label = Label(main_window, text="v1 =")
+    #v1_label.grid(row=1, column=0, sticky="w")
+    #v2_label = Label(main_window, text="v2 =")
+    #v2_label.grid(row=2, column=0, sticky="w")
+    #v3_label = Label(main_window, text="v3 =")
+    #v3_label.grid(row=3, column=0, sticky="w")
+    
+    #i1_label = Label(main_window, text="i1 =")
+    #i1_label.grid(row=0, column=1, sticky="w")
+    #i2_label = Label(main_window, text="i2 =")
+    #i2_label.grid(row=1, column=1, sticky="w")
+    #i3_label = Label(main_window, text="i3 =")
+    #i3_label.grid(row=2, column=1, sticky="w")
+    #it_label = Label(main_window, text="it =")
+    #it_label.grid(row=3, column=1, sticky="w")
+    
+    #pf1_label = Label(main_window, text="pf1 =")
+    #pf1_label.grid(row=5, column=0, sticky="w")
+    #pf2_label = Label(main_window, text="pf2 =")
+    #pf2_label.grid(row=6, column=0, sticky="w")
+    #pf3_label = Label(main_window, text="pf3 =")
+    #pf3_label.grid(row=7, column=0, sticky="w")
+    
+    #real_power1_label = Label(main_window, text="Real Power 1 =")
+    #real_power1_label.grid(row=5, column=1, sticky="w")
+    #real_power2_label = Label(main_window, text="Real Power 2 =")
+    #real_power2_label.grid(row=6, column=1, sticky="w")
+    #real_power3_label = Label(main_window, text="Real Power 3 =")
+    #real_power3_label.grid(row=7, column=1, sticky="w")
+    #reactive_power1_label = Label(main_window, text="Reactive Power 1 =")
+    
+    #reactive_power1_label.grid(row=9, column=0, sticky="w")
+    #reactive_power2_label = Label(main_window, text="Reactive Power 2 =")
+    #reactive_power2_label.grid(row=10, column=0, sticky="w")
+    #reactive_power3_label = Label(main_window, text="Reactive Power 3 =")
+    #reactive_power3_label.grid(row=11, column=0, sticky="w")
+    
+    #apparent_power1_label = Label(main_window, text="Apparent Power 1 =")
+    #apparent_power1_label.grid(row=9, column=1, sticky="w")
+    #apparent_power2_label = Label(main_window, text="Apparent Power 2 =")
+    #apparent_power2_label.grid(row=10, column=1, sticky="w")
+    #apparent_power3_label = Label(main_window, text="Apparent Power 3 =")
+    #apparent_power3_label.grid(row=11, column=1, sticky="w")
+    
+    #angle1_values_label = Label(main_window, text="Angle 1 =")
+    #angle1_values_label.grid(row=13, column=0, sticky="w")
+    #angle2_values_label = Label(main_window, text="Angle 2 =")
+    #angle2_values_label.grid(row=14, column=0, sticky="w")
+    #angle3_values_label = Label(main_window, text="Angle 3 =")
+    #angle3_values_label.grid(row=15, column=0, sticky="w")
+
+    while True:
+        try:
+            # Read the text file line by line
+            with open(file_path, "r") as file:
+                lines = file.readlines()
+
+            # Get the last line (last row)
+            for line_number in range(len(lines) - 1, -1, -1):
+                last_line = lines[line_number]
+                if "Response:" in last_line:
+                    columns = last_line.split()
+                    if len(columns) >= 56:
+                        break
+
+            if "Response:" not in last_line or len(columns) < 56:
+                print("No suitable line found.")
+                time.sleep(0.1)  # Wait for 1 second and try again
+                continue
+
+            # Extract values from columns
+            value1 = columns[9]     # Extract Simple Voltage Columns
+            value2 = columns[10]
+            value3 = columns[11]
+            value4 = columns[12]
+            value5 = columns[13]
+            value6 = columns[14]        
+            value7 = columns[15]    # Extract Frequency Columns
+            value8 = columns[16]
+            value9 = columns[17]    # Extract Current Columns
+            value10 = columns[18]        
+            value11 = columns[19]
+            value12 = columns[20]
+            value13 = columns[21]    # Extract Current Columns
+            value14 = columns[22]        
+            value15 = columns[23]
+            value16 = columns[24]
+            value17 = columns[51]    # Extract Power Factor Columns
+            value18 = columns[52]        
+            value19 = columns[53]
+            value20 = columns[54]        
+            value21 = columns[55]
+            value22 = columns[56]
+
+            # Combine values
+            V1 = combine_columns(value1, value2)
+            V2 = combine_columns(value3, value4)
+            V3 = combine_columns(value5, value6)
+            F = combine_columns(value7, value8)
+            I1 = combine_columns(value9, value10)
+            I2 = combine_columns(value11, value12)
+            I3 = combine_columns(value13, value14)
+            IT = combine_columns(value15, value16)
+            PF1 = combine_columns(value17, value18)
+            PF2 = combine_columns(value19, value20)
+            PF3 = combine_columns(value21, value22)
+
+            # Convert combined_value from hex to decimal
+            v1 = hex_to_decimal(V1)/100
+            v2 = hex_to_decimal(V2)/100
+            v3 = hex_to_decimal(V3)/100
+            f = hex_to_decimal(F)/100
+            i1 = hex_to_decimal(I1)*20/1000
+            i2 = hex_to_decimal(I2)*20/1000
+            i3 = hex_to_decimal(I3)*20/1000
+            it = hex_to_decimal(IT)*20/1000
+            pf1 = twos_complement(PF1)/1000
+            pf2 = twos_complement(PF2)/1000
+            pf3 = twos_complement(PF3)/1000
+            angle1 = math.acos(pf1)
+            angle2 = math.acos(pf2)
+            angle3 = math.acos(pf3)
+            real_power1 = v1*i1*math.cos(angle1)/1000
+            real_power2 = v2*i2*math.cos(angle2)/1000
+            real_power3 = v3*i3*math.cos(angle3)/1000
+            reactive_power1 = v1*i1*math.sin(angle1)/1000
+            reactive_power2 = v2*i2*math.sin(angle2)/1000
+            reactive_power3 = v3*i3*math.sin(angle3)/1000
+            apparent_power1 = v1*i1/1000
+            apparent_power2 = v2*i2/1000
+            apparent_power3 = v3*i3/1000
+            angledeg1 = angle1*180/np.pi
+            angledeg2 = angle2*180/np.pi
+            angledeg3 = angle3*180/np.pi
+
+            # Append values to lists
+            time_values.append(time.time())  # Store current time for plotting
+            v1_values.append(v1)
+            v2_values.append(v2)
+            v3_values.append(v3)
+            f_values.append(f)
+            i1_values.append(i1)
+            i2_values.append(i2)
+            i3_values.append(i3)
+            it_values.append(it)
+            pf1_values.append(pf1)
+            pf2_values.append(pf2)
+            pf3_values.append(pf3)
+            real_power1_values.append(real_power1)
+            real_power2_values.append(real_power2)
+            real_power3_values.append(real_power3)
+            reactive_power1_values.append(reactive_power1)
+            reactive_power2_values.append(reactive_power2)
+            reactive_power3_values.append(reactive_power3)
+            apparent_power1_values.append(apparent_power1)
+            apparent_power2_values.append(apparent_power2)
+            apparent_power3_values.append(apparent_power3)
+            angle1_values.append(angle1)
+            angle2_values.append(angle2)
+            angle3_values.append(angle3)
+
+            # Limit the data to a maximum of 10 points
+            time_values =time_values[-60:]
+            i1_values = i1_values[-60:]
+            i2_values = i2_values[-60:]
+            i3_values = i3_values[-60:]
+            it_values = it_values[-60:]
+            v1_values = v1_values[-60:]
+            v2_values = v2_values[-60:]
+            v3_values = v3_values[-60:]
+            f_values = f_values[-60:]
+            pf1_values = pf1_values[-60:]
+            pf2_values = pf2_values[-60:]
+            pf3_values = pf3_values[-60:]
+            real_power1_values = real_power1_values[-60:]
+            real_power2_values = real_power2_values[-60:]
+            real_power3_values = real_power3_values[-60:]
+            reactive_power1_values = reactive_power1_values[-60:]
+            reactive_power2_values = reactive_power2_values[-60:]
+            reactive_power3_values = reactive_power3_values[-60:]
+            apparent_power1_values = apparent_power1_values[-60:]
+            apparent_power2_values = apparent_power2_values[-60:]
+            apparent_power3_values = apparent_power3_values[-60:]
+            angle1_values = angle1_values[-60:]
+            angle2_values = angle2_values[-60:]
+            angle3_values = angle3_values[-60:]
+
+            # Update the labels with new readings
+            #v1_label.config(text="Voltage 1 = %.2f" % v1)
+            #v2_label.config(text="Voltage 2 = %.2f" % v2)
+            #v3_label.config(text="Voltage 3 = %.2f" % v3)
+            #f_label.config(text="Frequency = %.2f" % f)
+            #i1_label.config(text="Current 1 = %.2f" % i1)
+            #i2_label.config(text="Current 2 = %.2f" % i2)
+            #i3_label.config(text="Current 3 = %.2f" % i3)
+            #it_label.config(text="Total Current = %.2f" % it)
+            #pf1_label.config(text="Power Factor 1 = %.2f" % pf1)
+            #pf2_label.config(text="Power Factor 2 = %.2f" % pf2)
+            #pf3_label.config(text="Power Factor 3 = %.2f" % pf3)
+            #real_power1_label.config(text="Real Power 1 = %.2f" % real_power1)
+            #real_power2_label.config(text="Real Power 2 = %.2f" % real_power2)
+            #real_power3_label.config(text="Real Power 3 = %.2f" % real_power3)
+            #reactive_power1_label.config(text="Reactive Power 1 = %.2f" % reactive_power1)
+            #reactive_power2_label.config(text="Reactive Power 2 = %.2f" % reactive_power2)
+            #reactive_power3_label.config(text="Reactive Power 3 = %.2f" % reactive_power3)
+            #apparent_power1_label.config(text="Apparent Power 1 = %.2f" % apparent_power1)
+            #apparent_power2_label.config(text="Apparent Power 2 = %.2f" % apparent_power2)
+            #apparent_power3_label.config(text="Apparent Power 3 = %.2f" % apparent_power3)
+            #angle1_values_label.config(text="Angle 1 = %.2f" % angledeg1)
+            #angle2_values_label.config(text="Angle 2 = %.2f" % angledeg2)
+            #angle3_values_label.config(text="Angle 3 = %.2f" % angledeg3)
+
+            # Create frames to group related labels
+            f_frame = Frame(main_window, bd=2, relief="groove")
+            f_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nw")
+            
+            voltage_frame = Frame(main_window, bd=2, relief="groove")
+            voltage_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nw")
+            
+            current_frame = Frame(main_window, bd=2, relief="groove")
+            current_frame.grid(row=2, column=0, padx=10, pady=10, sticky="nw")
+            
+            pf_frame = Frame(main_window, bd=2, relief="groove")
+            pf_frame.grid(row=3, column=0, padx=10, pady=10, sticky="nw")
+            
+            angle_frame = Frame(main_window, bd=2, relief="groove")
+            angle_frame.grid(row=4, column=0, padx=10, pady=10, sticky="nw")
+
+            real_frame = Frame(main_window, bd=2, relief="groove")
+            real_frame.grid(row=5, column=0, padx=10, pady=10, sticky="nw")
+            
+            reactive_frame = Frame(main_window, bd=2, relief="groove")
+            reactive_frame.grid(row=6, column=0, padx=10, pady=10, sticky="nw")
+            
+            apparent_frame = Frame(main_window, bd=2, relief="groove")
+            apparent_frame.grid(row=7, column=0, padx=10, pady=10, sticky="nw")
+
+            # Add labels to respective frames
+            f_label = Label(f_frame, text="Frequency = %.2f" % f)
+            f_label.pack(anchor="w")
+            
+            v1_label = Label(voltage_frame, text="Voltage 1 = %.2f" % v1)
+            v1_label.pack(anchor="w")
+            v2_label = Label(voltage_frame, text="Voltage 2 = %.2f" % v2)
+            v2_label.pack(anchor="w")
+            v3_label = Label(voltage_frame, text="Voltage 3 = %.2f" % v3)
+            v3_label.pack(anchor="w")
+
+            i1_label = Label(current_frame, text="Current 1 = %.2f" % i1)
+            i1_label.pack(anchor="w")
+            i2_label = Label(current_frame, text="Current 2 = %.2f" % i2)
+            i2_label.pack(anchor="w")
+            i3_label = Label(current_frame, text="Current 3 = %.2f" % i3)
+            i3_label.pack(anchor="w")
+            it_label = Label(current_frame, text="Total Current = %.2f" % it)
+            it_label.pack(anchor="w")
+
+            pf1_label = Label(pf_frame, text="Power Factor 1 = %.2f" % pf1)
+            pf1_label.pack(anchor="w")
+            pf2_label = Label(pf_frame, text="Power Factor 2 = %.2f" % pf2)
+            pf2_label.pack(anchor="w")
+            pf3_label = Label(pf_frame, text="Power Factor 3 = %.2f" % pf3)
+            pf3_label.pack(anchor="w")
+
+            angle1_values_label = Label(angle_frame, text="Angle 1 = %.2f" % angledeg1)
+            angle1_values_label.pack(anchor="w")
+            angle2_values_label = Label(angle_frame, text="Angle 2 = %.2f" % angledeg2)
+            angle2_values_label.pack(anchor="w")
+            angle3_values_label = Label(angle_frame, text="Angle 3 = %.2f" % angledeg3)
+            angle3_values_label.pack(anchor="w")
+            
+            real_power1_label = Label(real_frame, text="Real Power 1 = %.2f" % real_power1)
+            real_power1_label.pack(anchor="w")
+            rea2_power1_label = Label(real_frame, text="Real Power 2 = %.2f" % real_power2)
+            rea2_power1_label.pack(anchor="w")
+            rea3_power1_label = Label(real_frame, text="Real Power 3 = %.2f" % real_power3)
+            rea3_power1_label.pack(anchor="w")
+            
+            reactive_power1_label = Label(reactive_frame, text="Reactive Power 1 = %.2f" % reactive_power1)
+            reactive_power1_label.pack(anchor="w")
+            reactive_power2_label = Label(reactive_frame, text="Reactive Power 2 = %.2f" % reactive_power2)
+            reactive_power2_label.pack(anchor="w")
+            reactive_power3_label = Label(reactive_frame, text="Reactive Power 3 = %.2f" % reactive_power3)
+            reactive_power3_label.pack(anchor="w")
+            
+            apparent_power1_label = Label(apparent_frame, text="Apparent Power 1 = %.2f" % apparent_power1)
+            apparent_power1_label.pack(anchor="w")
+            apparent_power2_label = Label(apparent_frame, text="Apparent Power 2 = %.2f" % apparent_power2)
+            apparent_power2_label.pack(anchor="w")
+            apparent_power3_label = Label(apparent_frame, text="Apparent Power 3 = %.2f" % apparent_power3)
+            apparent_power3_label.pack(anchor="w")
+            
+            # Update the plots
+            update_plots()
+
+            # Convert the values to bytes and send them over serial with a comma delimiter and a newline at the end
+            ser.write(('%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\n' % (v1, v2, v3, f, i1, i2, i3, it, pf1, pf2, pf3, real_power1, real_power2, real_power3, reactive_power1, reactive_power2, reactive_power3, apparent_power1, apparent_power2, apparent_power3)).encode())
+
+            # Read response from Arduino until a newline is encountered
+            response = ser.readline().decode().strip()
+            print("Response from Arduino:", response)
+
+            # Update alarm labels based on response
+            if response == "A":
+                alarm1_label.config(bg="green", fg="black")
+            elif response == "a":
+                alarm1_label.config(bg="red", fg="white")
+            elif response == "B":
+                alarm2_label.config(bg="green", fg="black")
+            elif response == "b":
+                alarm2_label.config(bg="red", fg="white")
+            elif response == "C":
+                alarm3_label.config(bg="green", fg="black")
+            elif response == "c":
+                alarm3_label.config(bg="red", fg="white")
+            elif response == "D":
+                alarm4_label.config(bg="green", fg="black")
+            elif response == "d":
+                alarm4_label.config(bg="red", fg="white")
+
+            time.sleep(0.1)  # Delay for 1 second before reading next data point
+
+        except FileNotFoundError:
+            print(f"File {file_path} not found.")
+
+
+# Function to combine two columns into a single string
+def combine_columns(value1, value2):
+    combined_value = f"{value1}{value2}"
+    return combined_value
+
+
+# Function to convert hex value to decimal
+def hex_to_decimal(hex_value):
+    try:
+        decimal_value = int(hex_value, 16)
+        return decimal_value
+    except ValueError:
+        print(f"Invalid hex value: {hex_value}")
+        return None
+
+# Function to calculate the two's complement
+def twos_complement(hex_value):
+    decimal_value = int(hex_value, 16)
+    if decimal_value & (1 << (len(hex_value) * 4 - 1)):
+        n = len(hex_value) * 4
+        decimal_value -= 2**n
+    return decimal_value
+
+
+# Function to update plots
+def update_plots():
+    global time_values, plot_frame, angle1_values, angle2_values, angle3_values, i1_values, i2_values, i3_values, it_values, v1_values, v2_values, v3_values, f_values, pf1_values, pf2_values, pf3_values, real_power1_values, real_power2_values, real_power3_values, reactive_power1_values, reactive_power2_values, reactive_power3_values, apparent_power1_values, apparent_power2_values, apparent_power3_values
+    
+    # Update plots
+    if plot_frame:
+        plt.subplots_adjust(hspace=0.7, wspace=0.2)
+        num_samples = int(len(v1_values) * 1.5)
+        t = np.linspace(0, 2 * 1 / 60, num=num_samples)
+        
+        # Plot frequency
+        plot_frame.canvas.figure.axes[0].cla()  # Clear previous plot
+        plot_frame.canvas.figure.axes[0].plot(time_values, f_values, label='Frequency (Hz)')
+        plot_frame.canvas.figure.axes[0].set_xlabel('Time')
+        plot_frame.canvas.figure.axes[0].set_ylabel('Frequency (Hz)')
+        plot_frame.canvas.figure.axes[0].legend()
+        
+        # Plot DC voltage
+        plot_frame.canvas.figure.axes[1].cla()  # Clear previous plot
+        plot_frame.canvas.figure.axes[1].plot(time_values, v1_values, label='Voltage 1 (V)')
+        plot_frame.canvas.figure.axes[1].plot(time_values, v2_values, label='Voltage 2 (V)')
+        plot_frame.canvas.figure.axes[1].plot(time_values, v3_values, label='Voltage 3 (V)')
+        plot_frame.canvas.figure.axes[1].set_xlabel('Time')
+        plot_frame.canvas.figure.axes[1].set_ylabel('DC Voltages (V)')
+        plot_frame.canvas.figure.axes[1].legend()
+        
+        # Plot AC voltage
+        plot_frame.canvas.figure.axes[2].cla()  # Clear previous plot
+        angle1_radians = np.radians(angle1_values)
+        plot_frame.canvas.figure.axes[2].plot(time_values, v1_values * np.sin(2 * np.pi * 60 * t[:len(v1_values)]), label='Voltage 1 Angle')
+        plot_frame.canvas.figure.axes[2].plot(time_values, v2_values * np.sin(2 * np.pi * 60 * t[:len(v2_values)]), label='Voltage 2 Angle')
+        plot_frame.canvas.figure.axes[2].plot(time_values, v3_values * np.sin(2 * np.pi * 60 * t[:len(v3_values)]), label='Voltage 3 Angle')
+        plot_frame.canvas.figure.axes[2].plot(time_values, v2_values * np.sin(2 * np.pi * 60 * t[:len(v2_values)]+ angle1_values), label='Current 1 Angle')
+        plot_frame.canvas.figure.axes[2].plot(time_values, v2_values * np.sin(2 * np.pi * 60 * t[:len(v2_values)]+ angle2_values), label='Current 2 Angle')
+        plot_frame.canvas.figure.axes[2].plot(time_values, v2_values * np.sin(2 * np.pi * 60 * t[:len(v2_values)]+ angle3_values), label='Current 3 Angle')
+        plot_frame.canvas.figure.axes[2].set_xlabel('Time')
+        plot_frame.canvas.figure.axes[2].set_ylabel('Phase Shifts')
+        plot_frame.canvas.figure.axes[2].legend()
+
+        # Plot Currents
+        plot_frame.canvas.figure.axes[3].cla()  # Clear previous plot
+        plot_frame.canvas.figure.axes[3].plot(time_values, i1_values, label='Current 1 (A)')
+        plot_frame.canvas.figure.axes[3].plot(time_values, i2_values, label='Current 2 (A)')
+        plot_frame.canvas.figure.axes[3].plot(time_values, i3_values, label='Current 3 (A)')
+        plot_frame.canvas.figure.axes[3].plot(time_values, it_values, label='Current Total (A)')
+        plot_frame.canvas.figure.axes[3].set_xlabel('Time')
+        plot_frame.canvas.figure.axes[3].set_ylabel('Currents (A)')
+        plot_frame.canvas.figure.axes[3].legend()
+
+        # Plot Power Factors
+        plot_frame.canvas.figure.axes[4].cla()  # Clear previous plot
+        plot_frame.canvas.figure.axes[4].plot(time_values, pf1_values, label='Power Factor 1')
+        plot_frame.canvas.figure.axes[4].plot(time_values, pf2_values, label='Power Factor 2')
+        plot_frame.canvas.figure.axes[4].plot(time_values, pf3_values, label='Power Factor 3')
+        plot_frame.canvas.figure.axes[4].set_xlabel('Time')
+        plot_frame.canvas.figure.axes[4].set_ylabel('Power Factors')
+        plot_frame.canvas.figure.axes[4].legend()
+
+        # Plot Real Powers
+        plot_frame.canvas.figure.axes[5].cla()  # Clear previous plot
+        plot_frame.canvas.figure.axes[5].plot(time_values, real_power1_values, label='Real Power 1 (kW)')
+        plot_frame.canvas.figure.axes[5].plot(time_values, real_power2_values, label='Real Power 2 (kW)')
+        plot_frame.canvas.figure.axes[5].plot(time_values, real_power3_values, label='Real Power 3 (kW)')
+        plot_frame.canvas.figure.axes[5].set_xlabel('Time')
+        plot_frame.canvas.figure.axes[5].set_ylabel('Real Powers (kW)')
+        plot_frame.canvas.figure.axes[5].legend()
+        
+        # Plot Reactive Powers
+        plot_frame.canvas.figure.axes[6].cla()  # Clear previous plot
+        plot_frame.canvas.figure.axes[6].plot(time_values, reactive_power1_values, label='Reactive Power 1 (kVA)')
+        plot_frame.canvas.figure.axes[6].plot(time_values, reactive_power2_values, label='Reactive Power 2 (kVA)')
+        plot_frame.canvas.figure.axes[6].plot(time_values, reactive_power3_values, label='Reactive Power 3 (kVA)')
+        plot_frame.canvas.figure.axes[6].set_xlabel('Time')
+        plot_frame.canvas.figure.axes[6].set_ylabel('Reactive Powers (kVA)')
+        plot_frame.canvas.figure.axes[6].legend()
+        
+        # Plot Apparent Powers
+        plot_frame.canvas.figure.axes[7].cla()  # Clear previous plot
+        plot_frame.canvas.figure.axes[7].plot(time_values, apparent_power1_values, label='Apparent Power 1 (kVAR)')
+        plot_frame.canvas.figure.axes[7].plot(time_values, apparent_power2_values, label='Apparent Power 2 (kVAR)')
+        plot_frame.canvas.figure.axes[7].plot(time_values, apparent_power3_values, label='Apparent Power 3 (kVAR)')
+        plot_frame.canvas.figure.axes[7].set_xlabel('Time')
+        plot_frame.canvas.figure.axes[7].set_ylabel('Apparent Powers (kVAR)')
+        plot_frame.canvas.figure.axes[7].legend()
+
+        # Redraw canvas
+        plot_frame.canvas.draw()
+
+
+# Function to process login
+def process_login():
+    global root  # Make root a global variable
+    username = username_entry.get()
+    password = password_entry.get()
+    if username == "admin" and password == "admin":
+        root.withdraw()  # Hide login window if login successful
+        open_main_gui()  # Open main GUI window
+    else:
+        messagebox.showerror("Error", "Invalid username or password. Please try again.")
+
+
+# Create login window
+root = Tk()
+root.title("Login")
+
+# Load and display the login logo
+logo = Image.open("logo.png")
+logo = logo.resize((200, 200))  # Resize the logo as needed
+logo_render = ImageTk.PhotoImage(logo)
+logo_label = Label(root, image=logo_render)
+logo_label.grid(row=0, columnspan=2)
+
+# Username label and entry
+Label(root, text="Username:").grid(row=1, column=0)
+username_entry = Entry(root)
+username_entry.grid(row=1, column=1)
+
+# Password label and entry
+Label(root, text="Password:").grid(row=2, column=0)
+password_entry = Entry(root, show="*")
+password_entry.grid(row=2, column=1)
+
+# Login button
+login_button = Button(root, text="Login", command=process_login)
+login_button.grid(row=3, columnspan=2)
+
+root.mainloop()
